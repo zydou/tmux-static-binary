@@ -1,15 +1,10 @@
 ---
 name: tmux
-run-name: tmux-${{inputs.tmux}}-${{inputs.baseos}}
+run-name: tmux-${{inputs.tmux}}
 
 on:
   workflow_dispatch:
     inputs:
-      baseos:
-        required: true
-        description: base image os
-        default: xenial
-        type: string
       tmux:
         required: true
         description: tmux version
@@ -20,21 +15,16 @@ permissions: write-all
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
     runs-on: ubuntu-latest
-    name: tmux ${{inputs.tmux}} (${{matrix.arch}})
+    name: tmux ${{inputs.tmux}}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
 
       - name: Get musl version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="$(gh api /repos/bminor/musl/tags --jq '.[0].name')"
-          echo "musl=${VERSION#v}" >> $GITHUB_ENV
+          echo "musl=$(gh api /repos/bminor/musl/tags --jq '.[0].name')" >> $GITHUB_ENV
 
       - name: Get libevent version
         env:
@@ -53,8 +43,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="$(gh api /repos/upx/upx/tags --jq '.[0].name')"
-          echo "upx=${VERSION#v}" >> $GITHUB_ENV
+          echo "upx=$(gh api /repos/upx/upx/tags --jq '.[0].name')" >> $GITHUB_ENV
 
       - name: Print versions
         run: |
@@ -78,34 +67,26 @@ jobs:
         with:
           context: .
           file: Dockerfile
-          platforms: linux/${{matrix.arch}}
+          platforms: linux/amd64
           build-args: |
-            BASEOS=${{inputs.baseos}}
             MUSL_VERSION=${{env.musl}}
             LIBEVENT_VERSION=${{env.libevent}}
             NCURSES_VERSION=${{env.ncurses}}
             TMUX_VERSION=${{inputs.tmux}}
             UPX_VERSION=${{env.upx}}
           push: false
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:tmux-${{inputs.tmux}}-musl-${{env.musl}}-libevent-${{env.libevent}}-ncurses-${{env.ncurses}}-upx-${{env.upx}}-${{inputs.baseos}}-${{matrix.arch}}
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:tmux-${{inputs.tmux}}-musl-${{env.musl}}-libevent-${{env.libevent}}-ncurses-${{env.ncurses}}-upx-${{env.upx}}-${{inputs.baseos}}-${{matrix.arch}},mode=max
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:tmux-${{inputs.tmux}}
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:tmux-${{inputs.tmux}},mode=max
           outputs: type=local,dest=./
 
-      - name: Upload ${{matrix.arch}}
+      - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |-
           ls -R
-          mv tmux "tmux-${{inputs.tmux}}-linux-${{matrix.arch}}"
-          # create release if not exist
-          gh release create "${{inputs.tmux}}" --notes "Release tmux ${{inputs.tmux}}" --title "tmux-${{inputs.tmux}}" --repo "${{github.repository}}" || true
-          # delete the asset if exists
-          gh release delete-asset "${{inputs.tmux}}" "tmux-${{inputs.tmux}}-linux-${{matrix.arch}}" --yes --repo "${{github.repository}}" || true
-          gh release upload "${{inputs.tmux}}" "./tmux-${{inputs.tmux}}-linux-${{matrix.arch}}" --repo "${{github.repository}}"
-
-          mv tmux-upx "tmux-upx-${{inputs.tmux}}-linux-${{matrix.arch}}"
-          # create release if not exist
-          gh release create "${{inputs.tmux}}" --notes "Release tmux ${{inputs.tmux}}" --title "tmux-${{inputs.tmux}}" --repo "${{github.repository}}" || true
-          # delete the asset if exists
-          gh release delete-asset "${{inputs.tmux}}" "tmux-upx-${{inputs.tmux}}-linux-${{matrix.arch}}" --yes --repo "${{github.repository}}" || true
-          gh release upload "${{inputs.tmux}}" "./tmux-upx-${{inputs.tmux}}-linux-${{matrix.arch}}" --repo "${{github.repository}}"
+          gh release create "${{inputs.tmux}}" --notes "build tmux-${{inputs.tmux}} with:<br>musl: ${{env.musl}}<br>libevent: ${{env.libevent}}<br>ncurses: ${{env.ncurses}}<br>tmux: ${{inputs.tmux}}<br><br>Compressed with upx ${{env.upx}}" --title "tmux-${{inputs.tmux}}" --repo "${{github.repository}}" || true
+          gh release edit "${{inputs.tmux}}" --notes "build tmux-${{inputs.tmux}} with:<br>musl: ${{env.musl}}<br>libevent: ${{env.libevent}}<br>ncurses: ${{env.ncurses}}<br>tmux: ${{inputs.tmux}}<br><br>Compressed with upx ${{env.upx}}" --title "tmux-${{inputs.tmux}}" --repo "${{github.repository}}" || true
+          gh release delete-asset "${{inputs.tmux}}" "tmux" --yes --repo "${{github.repository}}" || true
+          gh release upload "${{inputs.tmux}}" "./tmux" --repo "${{github.repository}}"
+          gh release delete-asset "${{inputs.tmux}}" "tmux-upx" --yes --repo "${{github.repository}}" || true
+          gh release upload "${{inputs.tmux}}" "./tmux-upx" --repo "${{github.repository}}"
