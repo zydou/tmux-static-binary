@@ -1,0 +1,7 @@
+{
+  "musl": "79bdacff83a6bd5b70ff5ae5eb8b6de82c2f7c30",
+  "libevent": "cfb2b89a1d0642abd6389913e237f49c662502e4",
+  "ncurses": "87c2c84cbd2332d6d94b12a1dcaf12ad1a51a938",
+  "tmux": "bdf8e614af34ba1eaa8243d3a818c8546cb21812",
+  "upx": "v4.2.1"
+}
