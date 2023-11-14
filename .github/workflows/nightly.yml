@@ -1,0 +1,158 @@
+---
+name: nightly
+run-name: nightly build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/nightly.yml
+      - nightly.Dockerfile
+  schedule:
+    - cron: 45 23 * * *
+
+permissions: write-all
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  filter:
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.trigger-check.outputs.action }}
+      musl_ref: ${{ steps.meta.outputs.musl_ref }}
+      libevent_ref: ${{ steps.meta.outputs.libevent_ref }}
+      ncurses_ref: ${{ steps.meta.outputs.ncurses_ref }}
+      tmux_ref: ${{ steps.meta.outputs.tmux_ref }}
+      upx_ref: ${{ steps.meta.outputs.upx_ref }}
+    steps:
+      - uses: actions/checkout@main
+      - name: set meta info
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: meta
+        run: |
+          echo "musl_ref=$(git ls-remote https://github.com/bminor/musl.git HEAD | awk '{ print $1}')" >> $GITHUB_OUTPUT
+          echo "libevent_ref=$(git ls-remote https://github.com/libevent/libevent.git HEAD | awk '{ print $1}')" >> $GITHUB_OUTPUT
+          echo "ncurses_ref=$(git ls-remote https://github.com/mirror/ncurses.git HEAD | awk '{ print $1}')" >> $GITHUB_OUTPUT
+          echo "tmux_ref=$(git ls-remote https://github.com/tmux/tmux.git HEAD | awk '{ print $1}')" >> $GITHUB_OUTPUT
+          echo "upx_ref=$(gh api /repos/upx/upx/tags --jq '.[0].name')" >> $GITHUB_OUTPUT
+
+      - name: check if we need to trigger a build
+        id: trigger-check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          musl_ref: ${{ steps.meta.outputs.musl_ref }}
+          libevent_ref: ${{ steps.meta.outputs.libevent_ref }}
+          ncurses_ref: ${{ steps.meta.outputs.ncurses_ref }}
+          tmux_ref: ${{ steps.meta.outputs.tmux_ref }}
+          upx_ref: ${{ steps.meta.outputs.upx_ref }}
+        run: |
+          if ! gh api /repos/${{github.repository}}/branches/manifest > /dev/null 2>&1; then
+          echo "branch manifest not found. trigger a build"
+          echo "action=trigger" >> "$GITHUB_OUTPUT"
+          else
+          last_musl=$(curl -sSLf https://raw.githubusercontent.com/${{github.repository}}/manifest/manifest.json | jq -r '.musl_ref')
+          last_libevent=$(curl -sSLf https://raw.githubusercontent.com/${{github.repository}}/manifest/manifest.json | jq -r '.libevent_ref')
+          last_ncurses=$(curl -sSLf https://raw.githubusercontent.com/${{github.repository}}/manifest/manifest.json | jq -r '.ncurses_ref')
+          last_tmux=$(curl -sSLf https://raw.githubusercontent.com/${{github.repository}}/manifest/manifest.json | jq -r '.tmux_ref')
+          last_upx=$(curl -sSLf https://raw.githubusercontent.com/${{github.repository}}/manifest/manifest.json | jq -r '.upx_ref')
+          if [[ "$last_musl" != "$musl_ref" || "$last_libevent" != "$libevent_ref" || "$last_ncurses" != "$ncurses_ref" || "$last_tmux" != "$tmux_ref" || "$last_upx" != "$upx_ref" ]]; then
+          echo "action=trigger" >> "$GITHUB_OUTPUT"
+          else
+          echo "action=skip" >> "$GITHUB_OUTPUT"
+          fi
+          fi
+
+  build:
+    needs: filter
+    if: needs.filter.outputs.action == 'trigger'
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@master
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@master
+      - name: Login to GHCR
+        uses: docker/login-action@master
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build
+        uses: docker/build-push-action@master
+        with:
+          context: .
+          file: nightly.Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            MUSL_VERSION=${{ needs.filter.outputs.musl_ref }}
+            LIBEVENT_VERSION=${{ needs.filter.outputs.libevent_ref }}
+            NCURSES_VERSION=${{ needs.filter.outputs.ncurses_ref }}
+            TMUX_VERSION=${{ needs.filter.outputs.tmux_ref }}
+            UPX_VERSION=${{ needs.filter.outputs.upx_ref }}
+          push: false
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:cache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:cache,mode=max
+          outputs: type=local,dest=./
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TMUX: ${{ needs.filter.outputs.tmux_ref }}
+        run: |-
+          gh release create "${TMUX:0:7}" --prerelease --notes "build tmux with:<br>musl: ${{ needs.filter.outputs.musl_ref }}<br>libevent: ${{ needs.filter.outputs.libevent_ref }}<br>ncurses: ${{ needs.filter.outputs.ncurses_ref }}<br>tmux: ${{ needs.filter.outputs.tmux_ref }}<br><br>Compressed with upx ${{ needs.filter.outputs.upx_ref }}" --title "tmux-${TMUX:0:7}" --repo "${{github.repository}}" || true
+          gh release delete-asset "${TMUX:0:7}" "tmux" --yes --repo "${{github.repository}}" || true
+          gh release upload "${TMUX:0:7}" "./tmux" --repo "${{github.repository}}"
+          gh release delete-asset "${TMUX:0:7}" "tmux-upx" --yes --repo "${{github.repository}}" || true
+          gh release upload "${TMUX:0:7}" "./tmux-upx" --repo "${{github.repository}}"
+          gh release create "nightly" --prerelease --notes "Nightly build tmux with:<br>musl: ${{ needs.filter.outputs.musl_ref }}<br>libevent: ${{ needs.filter.outputs.libevent_ref }}<br>ncurses: ${{ needs.filter.outputs.ncurses_ref }}<br>tmux: ${{ needs.filter.outputs.tmux_ref }}<br><br>Compressed with upx ${{ needs.filter.outputs.upx_ref }}" --title "nightly" --repo "${{github.repository}}" || true
+          gh release edit "nightly" --prerelease --notes "Nightly build tmux with:<br>musl: ${{ needs.filter.outputs.musl_ref }}<br>libevent: ${{ needs.filter.outputs.libevent_ref }}<br>ncurses: ${{ needs.filter.outputs.ncurses_ref }}<br>tmux: ${{ needs.filter.outputs.tmux_ref }}<br><br>Compressed with upx ${{ needs.filter.outputs.upx_ref }}" --title "nightly" --repo "${{github.repository}}" || true
+          gh release delete-asset "nightly" "tmux" --yes --repo "${{github.repository}}" || true
+          gh release upload "nightly" "./tmux" --repo "${{github.repository}}"
+          gh release delete-asset "nightly" "tmux-upx" --yes --repo "${{github.repository}}" || true
+          gh release upload "nightly" "./tmux-upx" --repo "${{github.repository}}"
+
+  manifest:
+    runs-on: ubuntu-latest
+    needs: [filter, build]
+    name: push manifest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@main
+
+      - name: Print versions
+        run: |
+          echo "musl=${{ needs.filter.outputs.musl_ref }}"
+          echo "libevent=${{ needs.filter.outputs.libevent_ref }}"
+          echo "ncurses=${{ needs.filter.outputs.ncurses_ref }}"
+          echo "tmux=${{ needs.filter.outputs.tmux_ref }}"
+          echo "upx=${{ needs.filter.outputs.upx_ref }}"
+
+      - name: generate manifest
+        run: |-
+          mkdir public
+          cat <<EOF > public/manifest.json
+          {
+            "musl": "${{ needs.filter.outputs.musl_ref }}",
+            "libevent": "${{ needs.filter.outputs.libevent_ref }}",
+            "ncurses": "${{ needs.filter.outputs.ncurses_ref }}",
+            "tmux": "${{ needs.filter.outputs.tmux_ref }}",
+            "upx": "${{ needs.filter.outputs.upx_ref }}"
+          }
+          EOF
+          cat public/manifest.json
+
+      - name: Deploy
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: manifest
+          folder: ./public
+          single-commit: true
+          commit-message: ${{ github.event.head_ref.message }}
